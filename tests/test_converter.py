@@ -51,7 +51,8 @@ def plain_texts(root, stop_at_appendix=False):
     for p in container.iter(w("p")):
         if any(a.tag == TXBX for a in p.iterancestors()):
             continue
-        t = "".join(x.text or "" for x in p.iter(w("t")) if not any(a.tag == TXBX for a in x.iterancestors()))
+        t = "".join(("\n" if x.tag == w("br") else x.text or "") for x in p.iter(w("t"), w("br"))
+                    if not any(a.tag == TXBX for a in x.iterancestors())).rstrip("\n")
         if stop_at_appendix and re.match(r"^Приложение\s*№\s*1$", t.strip()):
             break
         if t.strip():
@@ -74,6 +75,11 @@ def component_rows(doc):
         if any("Содержание в компоненте" in x for x in c[0]):
             res.append(c)
     return res
+
+
+def wrap_pct(result: str) -> str:
+    """Числовой результат: проценты в скобках — с новой строки (BL-строки без изменений)."""
+    return result if "менее" in result else result.replace(" мг/кг (", " мг/кг\n(")
 
 
 def field(c2, prefix):
@@ -120,6 +126,12 @@ class RealProtocolTest(unittest.TestCase):
         texts = plain_texts(hdr)
         self.assertIn("№ 46ТР-НИ от 05.08.2026", texts)
         self.assertIn("NUMPAGES", etree.tostring(hdr, encoding="unicode"))
+
+    def test_numeric_results_wrap_percent(self):
+        rows = component_rows(self.doc)
+        c1 = [x for x in rows[-1][1] if x]
+        self.assertIn("Общий бром 74 ± 7 мг/кг\n(0,0074 ± 0,0007 %)", c1)
+        self.assertIn("Свинец (Pb) менее 10 мг/кг (0,001 %)", c1)
 
     def test_component_times(self):
         rows = component_rows(self.doc)
@@ -176,7 +188,7 @@ class SampleProtocolTest(unittest.TestCase):
                     self.assertEqual(c2[0], f"Дата и время проведения испытаний {exp['date']}")
                 for key in ("T", "RH", "P", "U", "f"):
                     self.assertEqual(field(c2, converter.COND_PREFIXES[key]), exp[key], key)
-                self.assertEqual([x for x in c1 if x], exp["results"])
+                self.assertEqual([x for x in c1 if x], [wrap_pct(r) for r in exp["results"]])
                 self.assertEqual(c2[c2.index("Результаты измерений:") + 1:], exp["details"])
                 self.assertIn(exp["measured"], c2)
         self.assertEqual(rows[0][2][0], "Дата и время проведения испытаний 02.10.2026 09:40")

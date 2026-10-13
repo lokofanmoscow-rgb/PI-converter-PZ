@@ -931,11 +931,12 @@ def generate_sigmas(pi: PIData) -> List[List[Optional[int]]]:
 
 
 def result_text(e: ElementResult) -> str:
+    """Текст во 2-й колонке; у числовых результатов проценты — с новой строки («\n» → разрыв строки)."""
     if e.is_bl:
         return f"{e.name} менее {e.mg} мг/кг ({e.pct} %)"
     if e.mg_unc:
-        return f"{e.name} {e.mg} ± {e.mg_unc} мг/кг ({e.pct} ± {e.pct_unc} %)"
-    return f"{e.name} {e.mg} мг/кг ({e.pct} %)"
+        return f"{e.name} {e.mg} ± {e.mg_unc} мг/кг\n({e.pct} ± {e.pct_unc} %)"
+    return f"{e.name} {e.mg} мг/кг\n({e.pct} %)"
 
 
 def detail_lines(e: ElementResult, sigma: Optional[int]) -> List[str]:
