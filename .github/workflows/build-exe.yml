@@ -1,0 +1,42 @@
+name: Build Windows EXE
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Tests
+        run: |
+          python -m pip install lxml
+          python -m unittest discover -s tests -v
+
+      - name: Build EXE (build.bat)
+        shell: cmd
+        run: build.bat
+
+      - name: Smoke test EXE on sample PI
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force smoke | Out-Null
+          python tests/make_sample_pi.py tests/fixtures/pi_2610101.json smoke/sample_pi.docx
+          $p = Start-Process -FilePath dist/PI_to_PZ.exe -ArgumentList '--batch', 'smoke/sample_pi.docx', '--out', 'smoke' -Wait -PassThru
+          Get-Content smoke/PI_to_PZ.log
+          if ($p.ExitCode -ne 0) { exit 1 }
+          $out = Get-ChildItem smoke -Filter '*2610101*.docx'
+          if (-not $out) { Write-Error 'PZ was not created'; exit 1 }
+          $out | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PI_to_PZ
+          path: dist/PI_to_PZ.exe
+          if-no-files-found: error
