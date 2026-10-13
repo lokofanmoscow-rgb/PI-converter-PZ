@@ -123,6 +123,10 @@ def build(fx: dict, out: str) -> None:
                        tr([cell("Cd"), cell("BL ≤(70−3σ)<X"), cell("BL ≤(70−3σ)<X"), cell("LOD < X")])],
                       [2000, 2000, 2000, 2000]))
     body.append(para("Испытания провел(а):"))
+    if fx.get("engineer"):
+        body.append(table([tr([cell("Инженер-испытатель", 3000), cell("", 3000), cell(fx["engineer"], 3000)]),
+                           tr([cell("", 3000), cell("", 3000), cell("(инициалы, фамилия)", 3000)])],
+                          [3000, 3000, 3000]))
     body.append(para(f"Дата выдачи протокола испытаний: {fx['date']}"))
     body.append(para("Приложение №1", bold=True, jc="right"))
     media = {}

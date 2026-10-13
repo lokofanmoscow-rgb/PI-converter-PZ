@@ -12,9 +12,14 @@ import converter
 APP_TITLE = "ПИ → ПЗ конвертер"
 
 
+def app_dir() -> str:
+    """Папка, где лежит EXE (или main.py при запуске из исходников)."""
+    return os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+
+
 def resource_path(name: str) -> str:
     """Путь к файлу рядом с EXE/скриптом, иначе — встроенному в EXE (PyInstaller)."""
-    exe_dir = os.path.dirname(sys.executable if getattr(sys, "frozen", False) else os.path.abspath(__file__))
+    exe_dir = app_dir()
     local = os.path.join(exe_dir, name)
     if os.path.exists(local):
         return local
@@ -108,10 +113,18 @@ class App:
         threading.Thread(target=self._worker, args=(path,), daemon=True).start()
 
     def _worker(self, path: str) -> None:
+        warnings = []
+
+        def log(line: str) -> None:
+            if line.startswith(("Внимание", "ВНИМАНИЕ")):
+                warnings.append(line)
+            self.write_log(line)
+
         try:
             template = resource_path(converter.TEMPLATE_NAME)
-            result = converter.convert(path, template, log=self.write_log)
-            self.root.after(0, self._done, result, None)
+            engineers = converter.load_engineers((app_dir(),))
+            result = converter.convert(path, template, log=log, engineers=engineers)
+            self.root.after(0, self._done, result, None, warnings)
         except converter.ConversionError as e:
             self.root.after(0, self._done, None, str(e))
         except PermissionError as e:
@@ -121,7 +134,7 @@ class App:
             self.write_log(traceback.format_exc())
             self.root.after(0, self._done, None, f"Непредвиденная ошибка: {e}")
 
-    def _done(self, result, error) -> None:
+    def _done(self, result, error, warnings=()) -> None:
         self.btn_create.configure(state=tk.NORMAL)
         if error:
             self.status.set("Ошибка — ПЗ не создан.")
@@ -129,8 +142,12 @@ class App:
             messagebox.showerror(APP_TITLE, error)
             return
         self.result_path = result
-        self.status.set(f"Готово: {os.path.basename(result)}")
         self.btn_open.pack(side=tk.LEFT, padx=(8, 0), before=self.lbl_status)
+        if warnings:
+            self.status.set(f"Готово, но есть предупреждения ({len(warnings)}): {os.path.basename(result)}")
+            messagebox.showwarning(APP_TITLE, "ПЗ создан, но проверьте:\n\n" + "\n\n".join(warnings))
+        else:
+            self.status.set(f"Готово: {os.path.basename(result)}")
 
     def open_result(self) -> None:
         if self.result_path:
@@ -146,7 +163,8 @@ def batch(args) -> int:
         args = args[:k] + args[k + 2:]
     log_lines = []
     try:
-        converter.convert(args[0], resource_path(converter.TEMPLATE_NAME), out_dir, log_lines.append)
+        converter.convert(args[0], resource_path(converter.TEMPLATE_NAME), out_dir, log_lines.append,
+                          converter.load_engineers((app_dir(),)))
         code = 0
     except Exception:  # noqa: BLE001
         log_lines.append(traceback.format_exc())

@@ -1,26 +1,25 @@
 """Сделать ПЗ_template.docx из готового ПЗ.
 
-    python tools/make_template.py ПЗ_2610101_от_05_10_2026.docx ПЗ_template.docx
+    python tools/make_template.py ПЗ_эталон.docx ПЗ_template.docx
 
 В таблице компонентов остаются шапка, строка пробоподготовки и одна строка
-компонента — по ней программа строит все блоки. Остальное (шапка, оборудование,
-подписи, Приложение №1) остаётся как в исходном ПЗ и перезаписывается при генерации.
+компонента — по ней программа строит все блоки. Фото из Приложения №1 удаляются
+(программа вставляет фото из ПИ). Остальное (шапка, оборудование, подписи,
+штампы ЭП) остаётся как в исходном ПЗ и перезаписывается при генерации.
 """
 import os
+import re
 import sys
-import zipfile
 
 from lxml import etree
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from converter import para_text, table_rows, w  # noqa: E402
+from converter import _Package, norm, para_text, table_rows, w  # noqa: E402
 
 
 def main(src: str, dst: str) -> None:
-    with zipfile.ZipFile(src) as z:
-        names = z.namelist()
-        files = {n: z.read(n) for n in names}
-    doc = etree.fromstring(files["word/document.xml"])
+    pkg = _Package(src)
+    doc = etree.fromstring(pkg.files["word/document.xml"])
     body = doc.find(w("body"))
     for tbl in body.iter(w("tbl")):
         rows = table_rows(tbl)
@@ -30,10 +29,15 @@ def main(src: str, dst: str) -> None:
                 r.getparent().remove(r)
             print(f"Строк компонентов было {len(comp_rows)}, оставлена 1")
             break
-    files["word/document.xml"] = etree.tostring(doc, xml_declaration=True, encoding="UTF-8", standalone=True)
-    with zipfile.ZipFile(dst, "w", zipfile.ZIP_DEFLATED) as z:
-        for n in names:
-            z.writestr(n, files[n])
+    kids = list(body)
+    head = max(i for i, el in enumerate(kids)
+               if el.tag == w("p") and re.match(r"^Приложение\s*№\s*1$", norm(para_text(el))))
+    end = next(i for i, el in enumerate(kids) if i > head and "Конец технических" in para_text(el))
+    for el in kids[head + 1:end]:
+        body.remove(el)
+    print(f"Из Приложения №1 удалено элементов: {end - head - 1}")
+    pkg.drop_unused_images(doc)
+    pkg.save(dst, doc)
     print(f"Шаблон сохранён: {dst}")
 
 

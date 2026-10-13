@@ -28,53 +28,52 @@ from lxml import etree
 
 TEMPLATE_NAME = "ПЗ_template.docx"
 
-# Оборудование набора Б (начиная с ПИ 2609093).
-# (наименование, заводской/инвентарный номер, дата очередной поверки)
-EQUIPMENT_SET_B = [
-    (
-        "Анализатор портативный спектрометрический Vanta, модификация: Анализатор Vanta C Core (V2CА), "
-        "модель: Спектрометр портативный рентгенофлуоресцентный Vanta Core (Анализатор XRF). "
-        "ПО: Vanta Software; номер версии: 4.12.107",
-        "Зав. № 940289, инв. № СИ1",
-        "23.09.2027",
-    ),
-    (
-        "Термогигрометр автономный ИВА-6 модификации ИВА-6Н-Д. ПО: iva6n.txt, номер версии: 9.05",
-        "Зав. № 43610, инв. № СИ2",
-        "30.10.2026",
-    ),
-    (
-        'Линейка измерительная металлическая торговой марки "Калиброн", иcполнения II',
-        "Зав. № 230201677, инв. № СИ5",
-        "05.11.2026",
-    ),
-    (
-        "Штангенциркуль торговой марки «SHAN», с цифровым отсчетным устройством двусторонний с глубиномером",
-        "Зав. № САА09097, инв. № СИ8",
-        "05.11.2026",
-    ),
-    (
-        "Мультиметр VERDO МН6100 модификация VERDO MH6104",
-        "Зав. № H12G-C24127, инв. № СИ12",
-        "27.06.2027",
-    ),
-]
+# Оборудование: первые строки таблицы (СИ) берутся из Таблицы №2 ПИ, следом всегда идут
+# строки вспомогательного оборудования из шаблона (номер вида «Инв. № ВО…»).
 
 # Если испытания идут несколько дней, а в ПИ указаны только начало и конец
 # («ДД.ММ.ГГГГ с ЧЧ:ММ по ДД.ММ.ГГГГ ЧЧ:ММ»), рабочий день считается таким:
 WORKDAY_START = "09:00"
 WORKDAY_END = "18:00"
 
+# Время в блоках компонентов: первый компонент = начало испытаний + пробоподготовка,
+# последний = окончание испытаний минус несколько минут (как в эталонном ПЗ).
+FIRST_COMPONENT_OFFSET_MIN = 30
+LAST_COMPONENT_OFFSET_MIN = 5
+
+# Дата в подписях ПЗ: "test_end" — дата окончания испытаний (как в эталонном ПЗ),
+# "pi" — дата ПИ.
+SIGNATURE_DATE_SOURCE = "test_end"
+
 # Что писать в колонтитуле ПЗ после «№»: "napravlenie" (номер и дата направления,
-# как в исходном шаблоне) или "pi" (номер и дата ПИ).
+# как в шаблоне) или "pi" (номер и дата ПИ).
 HEADER_NUMBER_SOURCE = "napravlenie"
+
+# Инженеры-испытатели и их сертификаты ЭП (первый штамп в ПЗ).
+# Ключ — как в ПИ: «И.О. Фамилия». Дополнить без пересборки EXE можно файлом
+# ENGINEERS_FILE рядом с программой (тот же формат, JSON).
+ENGINEERS = {
+    "С.Д. Рождественский": {
+        "owner": "Рождественский Сергей Дмитриевич",
+        "certificate": "024d7aa60091b3be9c4c48dd5cd302552e",
+        "valid": "с 10.11.2025 по 10.11.2026",
+    },
+    "М.С. Свистунов": {
+        "owner": "Свистунов Максим Сергеевич",
+        "certificate": "022779a70091b3e59d4a3c5d9bb6704b48",
+        "valid": "с 10.11.2025 по 10.11.2026",
+    },
+}
+ENGINEERS_FILE = "инженеры.json"
 
 # Диапазон случайной 3σ для элементов с результатом BL.
 SIGMA_MIN, SIGMA_MAX = 3, 29
 
-# Максимальный размер фото в Приложении №1 (EMU, 1 см = 360000 EMU).
-PHOTO_MAX_W = int(10.2 * 360000)
-PHOTO_MAX_H = int(10.0 * 360000)
+# Фото в Приложении №1: каждое фото с подписью — на своей странице. Фото
+# масштабируется до этих размеров (EMU, 1 см = 360000), а если с подписью не
+# помещается на страницу — уменьшается, чтобы подпись не уходила на следующую.
+PHOTO_MAX_W = int(24.0 * 360000)
+PHOTO_MAX_H = int(12.5 * 360000)
 
 # ---------------------------------------------------------------------------
 # XML-утилиты
@@ -401,6 +400,7 @@ class PIData:
     room: str = ""
     conditions: dict = field(default_factory=dict)  # T, RH, P, U, f -> Condition
     equipment: List[Tuple[str, str, str]] = field(default_factory=list)
+    engineer: str = ""  # «С.Д. Рождественский»
     components: List[Component] = field(default_factory=list)
     photos: List[Photo] = field(default_factory=list)
     warnings: List[str] = field(default_factory=list)
@@ -607,6 +607,7 @@ def _parse_components(tables, warnings: List[str]) -> List[Component]:
             continue
         if not any(kw in txt for kw in ("свин", "ртут", "кадм")):
             continue
+        first_data_row = True
         for tr in table_rows(tbl):
             cells = row_cells(tr)
             texts = [norm(cell_text(c)) for c in cells]
@@ -623,13 +624,17 @@ def _parse_components(tables, warnings: List[str]) -> List[Component]:
             restart = vm is not None and vm.get(w("val")) == "restart"
             num_m = re.match(r"^(\d+)\s*\.?$", texts[0]) if el_idx > 0 else None
             current = comps[-1] if comps else None
+            # Номер компонента в ПИ часто — автонумерация (ячейка пустая), поэтому новый
+            # компонент = ячейка с vMerge="restart". Исключение — первая строка таблицы-
+            # продолжения после разрыва: там пустая restart-ячейка продолжает компонент.
+            continuation = first_data_row and current is not None and not texts[0] and key != "Pb"
             is_new = (
                 current is None
                 or bool(num_m)
-                or (restart and bool(texts[0]))
-                or (restart and key == "Pb")
+                or (restart and not continuation)
                 or any(e.key == key for e in current.elements)
             )
+            first_data_row = False
             if is_new:
                 number = num_m.group(1) if num_m else str(len(comps) + 1)
                 current = Component(number)
@@ -762,6 +767,26 @@ def _parse_photos(pkg: DocxPackage, warnings: List[str]) -> List[Photo]:
     return photos
 
 
+NAME_RE = re.compile(r"[А-ЯЁ]\.\s?[А-ЯЁ]\.\s?[А-ЯЁ][а-яё]+(?:-[А-ЯЁ][а-яё]+)?")
+
+
+def _normalize_name(name: str) -> str:
+    """«С.Д.Рождественский» → «С.Д. Рождественский»."""
+    m = re.match(r"([А-ЯЁ])\.\s?([А-ЯЁ])\.\s?(.+)", name)
+    return f"{m.group(1)}.{m.group(2)}. {m.group(3)}" if m else name
+
+
+def _parse_engineer(texts: List[str]) -> str:
+    """И.О. Фамилия из блока «Испытания провел(а): Инженер-испытатель …» в конце ПИ."""
+    for i in range(len(texts) - 1, -1, -1):
+        if re.match(r"^Испытания\s+провел", texts[i], re.I):
+            for t in texts[i: i + 12]:
+                m = NAME_RE.search(t)
+                if m:
+                    return _normalize_name(m.group(0))
+    return ""
+
+
 def parse_pi(path: str) -> PIData:
     """Извлечь данные из файла ПИ (.docx)."""
     if path.lower().endswith(".pdf"):
@@ -812,6 +837,11 @@ def parse_pi(path: str) -> PIData:
 
     pi.conditions = _parse_conditions(tables)
     pi.equipment = _parse_equipment(tables)
+    if not pi.equipment:
+        pi.warnings.append("Таблица оборудования (Таблица №2) в ПИ не найдена — в ПЗ оставлено оборудование шаблона.")
+    pi.engineer = _parse_engineer(texts)
+    if not pi.engineer:
+        pi.warnings.append("Инженер-испытатель в конце ПИ не найден — подпись и штамп ЭП оставлены как в шаблоне.")
     pi.components = _parse_components(tables, pi.warnings)
     if not pi.components:
         raise ConversionError("Не найдена таблица результатов по компонентам (Таблица №4).")
@@ -824,8 +854,26 @@ def parse_pi(path: str) -> PIData:
 # ---------------------------------------------------------------------------
 
 
+def _shift_hm(hm: str, minutes: int) -> str:
+    v = max(0, min(_hm(hm) + minutes, 23 * 60 + 59))
+    return f"{v // 60:02d}:{v % 60:02d}"
+
+
+def measurement_windows(windows: List[DayWindow]) -> List[DayWindow]:
+    """Окна измерений компонентов: начало сдвинуто на пробоподготовку, конец — на несколько минут раньше."""
+    ws = [DayWindow(x.day, x.start, x.end) for x in windows]
+    first, last = ws[0], ws[-1]
+    start = _shift_hm(first.start, FIRST_COMPONENT_OFFSET_MIN)
+    if _hm(start) < _hm(first.end) and (len(ws) > 1 or _hm(start) < _hm(_shift_hm(last.end, -LAST_COMPONENT_OFFSET_MIN))):
+        first.start = start
+    end = _shift_hm(last.end, -LAST_COMPONENT_OFFSET_MIN)
+    if _hm(end) > _hm(last.start):
+        last.end = end
+    return ws
+
+
 def component_datetimes(windows: List[DayWindow], n: int) -> List[str]:
-    """Строка «Дата и время» для каждого компонента 1..n."""
+    """Строка «Дата и время» для каждого компонента 1..n (windows — окна измерений)."""
     if n == 1:
         w0 = windows[0]
         return [f"{w0.day:%d.%m.%Y} {w0.start}"]
@@ -976,6 +1024,23 @@ def _fill_header_table(body, pi: PIData) -> None:
                     break
 
 
+def _last_ppr(tc):
+    ps = cell_paragraphs(tc)
+    ppr = ps[-1].find(w("pPr")) if ps else None
+    return copy.deepcopy(ppr) if ppr is not None else None
+
+
+def _apply_last_ppr(tc, ppr) -> None:
+    """Последний абзац ячейки — со свойствами последнего абзаца ячейки-образца (как в эталоне)."""
+    if ppr is None:
+        return
+    last = cell_paragraphs(tc)[-1]
+    old = last.find(w("pPr"))
+    if old is not None:
+        last.remove(old)
+    last.insert(0, copy.deepcopy(ppr))
+
+
 def _rebuild_c0(tc, comp: Component) -> None:
     ps = cell_paragraphs(tc)
     k = next((i for i, p in enumerate(ps) if "Содержание в компоненте" in para_text(p)), None)
@@ -1053,7 +1118,7 @@ def _fill_components_table(body, pi: PIData, log: Callable[[str], None]) -> None
         r.getparent().remove(r)
 
     n = len(pi.components)
-    dates = component_datetimes(pi.windows, n)
+    dates = component_datetimes(measurement_windows(pi.windows), n)
     sigmas = generate_sigmas(pi)
 
     if prep_row is not None:
@@ -1072,9 +1137,12 @@ def _fill_components_table(body, pi: PIData, log: Callable[[str], None]) -> None
         cells = row_cells(row)
         if len(cells) < 3:
             raise ConversionError("Строка компонента в шаблоне должна содержать 3 ячейки.")
+        last_pprs = [_last_ppr(c) for c in cells[:3]]
         _rebuild_c0(cells[0], comp)
         _rebuild_c1(cells[1], comp)
         _rebuild_c2(cells[2], comp, dates[i - 1], component_conditions(pi, i, n), sigmas[i - 1])
+        for c, ppr in zip(cells[:3], last_pprs):
+            _apply_last_ppr(c, ppr)
         parent.insert(insert_at, row)
         insert_at += 1
     log(f"Блоков компонентов в ПЗ: {n}")
@@ -1084,63 +1152,110 @@ def _escape_repl(s: str) -> str:
     return s.replace("\\", "\\\\")
 
 
-def _equipment_rows(pi: PIData, log: Callable[[str], None]) -> List[Tuple[str, str, str]]:
-    """Набор Б; дата поверки берётся из ПИ, если там она другая."""
-    translit = str.maketrans("АВЕКМНОРСТХаеосрх", "ABEKMHOPCTXaeocpx")
+def _normalize_equipment(name: str, number: str, due: str) -> Tuple[str, str, str]:
+    """Строка Таблицы №2 ПИ → формат ПЗ («зав. №940289, инв. №СИ1» → «Зав. № 940289, инв. № СИ1»)."""
+    def flat(s: str) -> str:
+        return norm(s.replace("\n", " "))
 
-    def key(s: str) -> str:
-        return re.sub(r"[\s№.]", "", s.translate(translit)).upper()
+    name = flat(name).rstrip(".")
+    number = re.sub(r"№\s*", "№ ", flat(number)).rstrip(".")
+    number = number[:1].upper() + number[1:]
+    return name, number, flat(due).rstrip(".")
 
-    rows = []
-    used = set()
-    for name, number, due in EQUIPMENT_SET_B:
-        serial = re.search(r"Зав\. № (\S+?),", number).group(1)
-        match = None
-        for k, (_, pi_number, pi_due) in enumerate(pi.equipment):
-            if key(serial) in key(pi_number):
-                match = (k, pi_due)
-                break
-        if match:
-            used.add(match[0])
-            pi_due = DATE_RE.search(match[1])
-            if pi_due and pi_due.group(0) != due:
-                log(f"Внимание: дата поверки «{name[:40]}…» в ПИ = {pi_due.group(0)} (в наборе Б {due}) — взята из ПИ.")
-                due = pi_due.group(0)
-        rows.append((name, number, due))
-    for k, (name, number, _) in enumerate(pi.equipment):
-        if k not in used:
-            log(f"Внимание: в ПИ есть оборудование вне набора Б: «{name[:60]}» ({number}) — в ПЗ не добавлено.")
-    return rows
+
+def _is_fixed_equipment_row(tr) -> bool:
+    cells = row_cells(tr)
+    return len(cells) >= 2 and bool(re.match(r"^\s*Инв\.\s*№\s*ВО", norm(cell_text(cells[1]))))
 
 
 def _fill_equipment_table(body, pi: PIData, log: Callable[[str], None]) -> None:
+    """Первые строки — оборудование из ПИ, следом строки ВО из шаблона без изменений."""
     tbl = _find_table(body, "Наименование средств измерений")
     if tbl is None:
         log("Внимание: в шаблоне не найдена таблица оборудования.")
         return
-    data = _equipment_rows(pi, log)
-    rows = table_rows(tbl)[1:]
-    if not rows:
+    if not pi.equipment:
         return
-    while len(rows) < len(data):
-        new = copy.deepcopy(rows[-1])
-        strip_para_ids(new)
-        rows[-1].addnext(new)
-        rows.append(new)
-    for extra in rows[len(data):]:
-        extra.getparent().remove(extra)
-    for tr, values in zip(rows, data):
-        for tc, value in zip(row_cells(tr), values):
+    rows = table_rows(tbl)[1:]
+    variable = [r for r in rows if not _is_fixed_equipment_row(r)]
+    proto = copy.deepcopy(variable[0] if variable else rows[0])
+    strip_para_ids(proto)
+    anchor = variable[0].getprevious() if variable else table_rows(tbl)[0]
+    for r in variable:
+        r.getparent().remove(r)
+    for values in reversed([_normalize_equipment(*e) for e in pi.equipment]):
+        row = copy.deepcopy(proto)
+        for tc, value in zip(row_cells(row), values):
             set_cell_text(tc, value)
+        anchor.addnext(row)
 
 
-def _update_signature_dates(body, pi: PIData) -> int:
-    count = 0
-    for p in body.findall(w("p")):
-        t = para_text(p)
+def load_engineers(extra_dirs: Tuple[str, ...] = ()) -> dict:
+    """Встроенный список инженеров + файл ENGINEERS_FILE рядом с программой (если есть)."""
+    import json
+
+    res = {k: dict(v) for k, v in ENGINEERS.items()}
+    for d in extra_dirs:
+        path = os.path.join(d, ENGINEERS_FILE)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8-sig") as f:
+                for k, v in json.load(f).items():
+                    res[_normalize_name(k)] = v
+    return res
+
+
+def signature_date(pi: PIData) -> str:
+    return pi.date if SIGNATURE_DATE_SOURCE == "pi" else pi.end[0]
+
+
+def _update_signatures(body, pi: PIData, engineers: dict, log: Callable[[str], None]) -> None:
+    """Инженер и его штамп ЭП (блок «Испытания провел»), даты обеих подписей."""
+    paras = body.findall(w("p"))
+    texts = [para_text(p) for p in paras]
+    i_eng = next((i for i, t in enumerate(texts) if t.strip().startswith("Испытания провел")), None)
+    i_chk = next((i for i, t in enumerate(texts) if t.strip().startswith("Результаты проверил")), None)
+    if i_eng is None or i_chk is None or i_chk < i_eng:
+        log("Внимание: в шаблоне не найден блок подписей — подписи не обновлены.")
+        return
+    date_text = signature_date(pi)
+    n_dates = 0
+    for p, t in zip(paras[i_eng:], texts[i_eng:]):
         if "_" in t and DATE_RE.search(t):
-            count += regex_replace_in_paragraph(p, DATE_RE.pattern, pi.date)
-    return count
+            n_dates += regex_replace_in_paragraph(p, DATE_RE.pattern, date_text)
+    if n_dates < 2:
+        log(f"Внимание: обновлено дат подписей: {n_dates} (ожидалось 2).")
+
+    if not pi.engineer:
+        return
+    # строка «Инженер-испытатель ___И.О. Фамилия ___дата__»: меняем фамилию, сохраняя ширину
+    for p in paras[i_eng:i_chk]:
+        t = "".join(x.text or "" for x in text_nodes(p))  # как видит regex_replace_in_paragraph
+        m = NAME_RE.search(t)
+        if "_" in t and m:
+            old = m.group(0)
+            spaces = re.match(r"\s*", t[m.end():]).group(0)
+            pad = " " * max(1, len(spaces) + len(old) - len(pi.engineer)) if spaces else ""
+            regex_replace_in_paragraph(p, re.escape(old) + r"\s*", _escape_repl(pi.engineer + pad))
+            break
+    info = engineers.get(pi.engineer)
+    if info is None:
+        log(f"ВНИМАНИЕ: нет данных сертификата ЭП для инженера «{pi.engineer}» — штамп ЭП в ПЗ НЕ изменён. "
+            f"Добавьте инженера в файл {ENGINEERS_FILE} рядом с программой.")
+        return
+    stamps = 0
+    for p in paras[i_eng:i_chk]:
+        for tx in p.iter(w("txbxContent")):
+            stamps += 1
+            for tp in tx.iter(w("p")):
+                t = para_text(tp)
+                if t.startswith("Сертификат:"):
+                    regex_replace_in_paragraph(tp, r"Сертификат:.*", _escape_repl(f"Сертификат: {info['certificate']}"))
+                elif t.startswith("Владелец:"):
+                    regex_replace_in_paragraph(tp, r"Владелец:.*", _escape_repl(f"Владелец: {info['owner']}"))
+                elif t.startswith("Срок действия:"):
+                    regex_replace_in_paragraph(tp, r"Срок действия:.*", _escape_repl(f"Срок действия: {info['valid']}"))
+    if not stamps:
+        log("Внимание: в шаблоне не найден штамп ЭП инженера-испытателя.")
 
 
 def _update_appendix_pages(body, pages: int) -> None:
@@ -1167,11 +1282,11 @@ _INLINE_XML = (
 ).format(W=W_NS, WP=WP_NS, A=A_NS, PIC=PIC_NS, R=R_NS)
 
 
-def _make_drawing(rid: str, img: dict, doc_pr_id: int, number: str):
+def _make_drawing(rid: str, img: dict, doc_pr_id: int, number: str, max_h: int = PHOTO_MAX_H):
     cx, cy, rot = img["cx"], img["cy"], img.get("rot", 0)
     l, t, r, b = img.get("eff", (0, 0, 0, 0))
     vis_w, vis_h = max(cx + l + r, 1), max(cy + t + b, 1)
-    scale = min(PHOTO_MAX_W / vis_w, PHOTO_MAX_H / vis_h)
+    scale = min(PHOTO_MAX_W / vis_w, max_h / vis_h)
 
     def sc(v: int) -> str:
         return str(int(round(v * scale)))
@@ -1269,31 +1384,125 @@ class _Package:
         os.replace(tmp, path)
 
 
-def _caption_paragraph(proto_p, lines: List[str], small_rpr) -> None:
-    rpr = first_rpr(proto_p)
-    rpr = copy.deepcopy(rpr) if rpr is not None else None
-    clear_paragraph(proto_p)
+PPR_ORDER = [
+    "pStyle", "keepNext", "keepLines", "pageBreakBefore", "framePr", "widowControl", "numPr",
+    "suppressLineNumbers", "pBdr", "shd", "tabs", "suppressAutoHyphens", "kinsoku", "wordWrap",
+    "overflowPunct", "topLinePunct", "autoSpaceDE", "autoSpaceDN", "bidi", "adjustRightInd", "snapToGrid",
+    "spacing", "ind", "contextualSpacing", "mirrorIndents", "suppressOverlap", "jc", "textDirection",
+    "textAlignment", "textboxTightWrap", "outlineLvl", "divId", "cnfStyle", "rPr", "sectPr", "pPrChange",
+]
+
+
+def ppr_set(p, tag: str, **attrs):
+    """Добавить/изменить свойство абзаца с соблюдением порядка элементов схемы (иначе Word ругается)."""
+    ppr = p.find(w("pPr"))
+    if ppr is None:
+        ppr = etree.Element(w("pPr"))
+        p.insert(0, ppr)
+    el = ppr.find(w(tag))
+    if el is None:
+        el = etree.Element(w(tag))
+        idx = PPR_ORDER.index(tag)
+        pos = len(ppr)
+        for i, ch in enumerate(ppr):
+            name = etree.QName(ch).localname
+            if name in PPR_ORDER and PPR_ORDER.index(name) > idx:
+                pos = i
+                break
+        ppr.insert(pos, el)
+    for k, v in attrs.items():
+        el.set(w(k), v)
+    return el
+
+
+def _rpr(small: bool = False):
+    rpr = etree.Element(w("rPr"))
+    etree.SubElement(rpr, w("bCs"))
+    if small:
+        etree.SubElement(rpr, w("sz")).set(w("val"), "20")
+        etree.SubElement(rpr, w("szCs")).set(w("val"), "20")
+    return rpr
+
+
+def _new_para(text: str = "", jc: Optional[str] = "center", keep_next: bool = True,
+              small: bool = False, trailing_br: bool = False):
+    p = etree.Element(w("p"))
+    if keep_next:
+        ppr_set(p, "keepNext")
+    if jc:
+        ppr_set(p, "jc", val=jc)
+    mark = ppr_set(p, "rPr")
+    for ch in list(_rpr(small)):
+        mark.append(ch)
+    if text:
+        p.append(make_run(text, _rpr(small)))
+    if trailing_br:
+        r = etree.SubElement(p, w("r"))
+        r.append(_rpr())
+        etree.SubElement(r, w("br"))
+    return p
+
+
+def _is_range_line(line: str) -> bool:
+    return bool(re.match(r"^\d+\s*(÷|-|–)\s*\d+|^\d+\s+компонент", line))
+
+
+def _caption_paragraphs(lines: List[str]):
+    """Подпись под фото: строки названия (12 пт) и диапазон компонентов (10 пт), как в эталоне."""
+    res = []
     for i, line in enumerate(lines):
-        is_range = bool(re.match(r"^\d+\s*(÷|-|–)\s*\d+|^\d+\s+компонент", line))
-        r = make_run(line, small_rpr if (is_range and small_rpr is not None) else rpr)
-        if i:
-            br_run = etree.Element(w("r"))
-            if rpr is not None:
-                br_run.append(copy.deepcopy(rpr))
-            etree.SubElement(br_run, w("br"))
-            proto_p.append(br_run)
-        proto_p.append(r)
+        nxt = lines[i + 1] if i + 1 < len(lines) else None
+        small = _is_range_line(line)
+        res.append(_new_para(line, small=small, trailing_br=not small and nxt is not None and _is_range_line(nxt)))
+    return res
 
 
 def _default_photos(pi: PIData) -> List[Photo]:
     n = len(pi.components)
     return [
-        Photo("1", [pi.sample_name]),
-        Photo("2", [f"Компоненты. {pi.sample_name}", f"1÷{n} компоненты"]),
+        Photo("1", [pi.sample_name.rstrip(".")]),
+        Photo("2", [f"Компоненты. {pi.sample_name.rstrip('.')}", f"1÷{n} компоненты"]),
     ]
 
 
+# Высоты строк Times New Roman (пт) при одинарном интервале — для раскладки Приложения №1.
+LINE_12PT = 13.8
+LINE_10PT = 11.5
+PAGE_SAFETY_PT = 24.0
+
+
+def _page_geometry(body) -> Tuple[float, float]:
+    """(высота, ширина) области текста страницы в пунктах."""
+    sect = body.find(w("sectPr"))
+    pg, mar = sect.find(w("pgSz")), sect.find(w("pgMar"))
+    h = int(pg.get(w("h"))) - int(mar.get(w("top"))) - int(mar.get(w("bottom")))
+    width = int(pg.get(w("w"))) - int(mar.get(w("left"))) - int(mar.get(w("right")))
+    return h / 20.0, width / 20.0
+
+
+def _caption_height(lines: List[str], width_pt: float) -> float:
+    chars = max(int(width_pt / 6.5), 40)
+    h = LINE_12PT * 3  # пустая строка под фото, «Фото №N», пустая строка после подписи
+    for i, line in enumerate(lines):
+        small = _is_range_line(line)
+        h += (LINE_10PT if small else LINE_12PT) * max(1, math.ceil(len(line) / chars))
+        if not small and i + 1 < len(lines) and _is_range_line(lines[i + 1]):
+            h += LINE_12PT  # перенос строки перед диапазоном
+    return h
+
+
+def _remove_empty_before(el) -> None:
+    prev = el.getprevious()
+    while (prev is not None and prev.tag == w("p") and not para_text(prev).strip()
+           and prev.find(f".//{w('drawing')}") is None and prev.find(f".//{w('pict')}") is None
+           and prev.find(f".//{w('sectPr')}") is None):
+        nxt = prev.getprevious()
+        prev.getparent().remove(prev)
+        prev = nxt
+
+
 def _fill_photos(pkg: _Package, body, pi: PIData, log: Callable[[str], None]) -> int:
+    """Приложение №1: каждое фото с подписью на своей странице. Возвращает число страниц."""
     blocks = list(body)
     head_idx = None
     for i, el in enumerate(blocks):
@@ -1302,78 +1511,71 @@ def _fill_photos(pkg: _Package, body, pi: PIData, log: Callable[[str], None]) ->
     if head_idx is None:
         log("Внимание: в шаблоне не найден заголовок «Приложение №1» — фото не обновлены.")
         return 0
-    photo_tables = [el for el in blocks[head_idx + 1:] if el.tag == w("tbl") and "Фото" in table_text(el)]
-    if not photo_tables:
-        log("Внимание: в шаблоне нет таблиц с фото — фото не обновлены.")
-        return 0
-    proto_tbl = copy.deepcopy(photo_tables[0])
-    strip_para_ids(proto_tbl)
-    spacer = photo_tables[0].getnext()
-    spacer = copy.deepcopy(spacer) if spacer is not None and spacer.tag == w("p") and not para_text(spacer).strip() else None
-    small_rpr = None
-    if len(photo_tables) > 1:
-        last_p = cell_paragraphs(row_cells(table_rows(photo_tables[1])[-1])[0])[-1]
-        runs = [r for r in last_p.findall(w("r")) if r.find(w("t")) is not None]
-        if runs and runs[-1].find(w("rPr")) is not None:
-            small_rpr = copy.deepcopy(runs[-1].find(w("rPr")))
-    # удаляем старые таблицы фото и пустые абзацы между ними
-    insert_at = body.index(photo_tables[0])
-    last = photo_tables[-1]
-    el = photo_tables[0]
-    while el is not None:
-        nxt = el.getnext()
-        body.remove(el)
-        if el is last:
-            break
-        el = nxt
+    head = blocks[head_idx]
+    end_idx = next((i for i in range(head_idx + 1, len(blocks))
+                    if blocks[i].tag == w("p") and "Конец технических" in para_text(blocks[i])), None)
+    for el in blocks[head_idx + 1: end_idx if end_idx is not None else len(blocks) - 1]:
+        if el.tag != w("sectPr"):
+            body.remove(el)
+    # Приложение всегда с новой страницы (вместо пустых абзацев в шаблоне)
+    _remove_empty_before(head)
+    ppr_set(head, "pageBreakBefore")
+    spacer = copy.deepcopy(head)
+    for r in spacer.findall(w("r")):
+        spacer.remove(r)
+    spacer.find(w("pPr")).remove(spacer.find(w("pPr")).find(w("pageBreakBefore")))
+    ppr_set(spacer, "keepNext")
+    head.addnext(spacer)
 
     photos = pi.photos or _default_photos(pi)
     if not pi.photos:
         log("Внимание: в ПИ не найдено Приложение №1 с фото — подписи сформированы по умолчанию, места под фото пустые.")
+    body_h, body_w = _page_geometry(body)
+    anchor = spacer
     doc_pr_id = 900000
     for k, ph in enumerate(photos):
-        tbl = copy.deepcopy(proto_tbl)
-        rows = table_rows(tbl)
-        img_cell = row_cells(rows[0])[0]
-        img_p = cell_paragraphs(img_cell)[0]
-        for r in list(img_p.findall(w("r"))):
-            img_p.remove(r)
+        lines = ph.lines or [""]
+        reserve = _caption_height(lines, body_w) + 4 + PAGE_SAFETY_PT
+        if k == 0:
+            reserve += LINE_12PT * 2  # заголовок «Приложение № 1» и пустая строка
+        if k == len(photos) - 1:
+            reserve += LINE_12PT + 12  # строка «Конец технических записей»
+        max_h = int(min(PHOTO_MAX_H, max(body_h - reserve, 72) * 12700))
+
+        img_p = _new_para()
+        if k:
+            ppr_set(img_p, "pageBreakBefore")
         if ph.image:
             try:
                 rid = pkg.add_image(ph.image["data"], ph.image["ext"])
                 run = etree.SubElement(img_p, w("r"))
                 rpr = etree.SubElement(run, w("rPr"))
+                etree.SubElement(rpr, w("bCs"))
                 etree.SubElement(rpr, w("noProof"))
                 doc_pr_id += 1
-                run.append(_make_drawing(rid, ph.image, doc_pr_id, ph.number))
+                run.append(_make_drawing(rid, ph.image, doc_pr_id, ph.number, max_h))
             except Exception as e:  # noqa: BLE001 — фото не должно ломать весь документ
                 log(f"Внимание: не удалось вставить фото №{ph.number}: {e}")
-        cap_cell = row_cells(rows[-1])[0]
-        cps = cell_paragraphs(cap_cell)
-        num_p = next((p for p in cps if para_text(p).strip().startswith("Фото")), None)
-        if num_p is None:
-            raise ConversionError("В шаблоне в таблице фото нет абзаца «Фото №…».")
-        set_par_text(num_p, f"Фото №{ph.number}")
-        cap_ps = cps[cps.index(num_p) + 1:]
-        if cap_ps:
-            _caption_paragraph(cap_ps[0], ph.lines or [""], small_rpr)
-            for extra in cap_ps[1:]:
-                cap_cell.remove(extra)
-        else:
-            p = copy.deepcopy(num_p)
-            _caption_paragraph(p, ph.lines or [""], small_rpr)
-            cap_cell.append(p)
-        body.insert(insert_at, tbl)
-        insert_at += 1
-        if spacer is not None and k < len(photos) - 1:
-            body.insert(insert_at, copy.deepcopy(spacer))
-            insert_at += 1
+        paras = [img_p, _new_para(jc=None), _new_para(f"Фото №{ph.number}")]
+        paras += _caption_paragraphs(lines)
+        paras.append(_new_para(keep_next=False))
+        for p in paras:
+            anchor.addnext(p)
+            anchor = p
     return len(photos)
 
 
-def _appendix_pages(photos_count: int) -> int:
-    # Альбомный лист: одно фото (до 10 см) с подписью на страницу.
-    return max(photos_count, 1)
+def _keep_signatures_together(body) -> None:
+    """Блок «Испытания провел … Руководитель ИЛ … дата» не разрывается между страницами."""
+    paras = body.findall(w("p"))
+    texts = [para_text(p) for p in paras]
+    i_eng = next((i for i, t in enumerate(texts) if t.strip().startswith("Испытания провел")), None)
+    i_head = next((i for i, t in enumerate(texts) if t.strip().startswith("Руководитель ИЛ")), None)
+    if i_eng is None or i_head is None or i_head < i_eng:
+        return
+    last = i_head + 1 if i_head + 1 < len(paras) and "дата" in texts[i_head + 1] else i_head
+    for p in paras[i_eng:last]:
+        ppr_set(p, "keepNext")
 
 
 def _update_headers(pkg: _Package, pi: PIData, est_pages: int) -> None:
@@ -1428,9 +1630,9 @@ def _make_numpages(p, est_pages: int) -> None:
     p.append(run("fldChar", fldCharType="end"))
 
 
-def _estimate_pages(n_components: int, n_photos: int) -> int:
+def _estimate_pages(n_components: int, appendix_pages: int) -> int:
     # грубая оценка для кэшированного значения поля (Word пересчитает)
-    return 3 + math.ceil(n_components / 1.45) + _appendix_pages(n_photos)
+    return 3 + math.ceil(n_components / 1.45) + appendix_pages
 
 
 def _dedupe_para_ids(document) -> None:
@@ -1447,7 +1649,8 @@ def _dedupe_para_ids(document) -> None:
             seen.add(v)
 
 
-def generate_pz(pi: PIData, template_path: str, out_path: str, log: Optional[Callable[[str], None]] = None) -> str:
+def generate_pz(pi: PIData, template_path: str, out_path: str, log: Optional[Callable[[str], None]] = None,
+                engineers: Optional[dict] = None) -> str:
     log = log or (lambda s: None)
     if not os.path.exists(template_path):
         raise ConversionError(f"Не найден шаблон ПЗ: {template_path}")
@@ -1458,13 +1661,11 @@ def generate_pz(pi: PIData, template_path: str, out_path: str, log: Optional[Cal
     _fill_header_table(body, pi)
     _fill_components_table(body, pi, log)
     _fill_equipment_table(body, pi, log)
-    n_sig = _update_signature_dates(body, pi)
-    if n_sig < 2:
-        log(f"Внимание: обновлено дат подписей: {n_sig} (ожидалось 2).")
-    n_photos = _fill_photos(pkg, body, pi, log)
-    pages = _appendix_pages(n_photos)
+    _update_signatures(body, pi, engineers or ENGINEERS, log)
+    _keep_signatures_together(body)
+    pages = _fill_photos(pkg, body, pi, log)
     _update_appendix_pages(body, pages)
-    _update_headers(pkg, pi, _estimate_pages(len(pi.components), n_photos))
+    _update_headers(pkg, pi, _estimate_pages(len(pi.components), pages))
     _dedupe_para_ids(document)
     pkg.drop_unused_images(document)
     pkg.save(out_path, document)
@@ -1485,14 +1686,17 @@ def summary(pi: PIData) -> List[str]:
         f"Испытания: с {d1} {t1} по {d2} {t2}",
         "Условия: " + "; ".join(f"{k} {c.text}" for k, c in pi.conditions.items()),
         f"Компонентов: {len(pi.components)} (числовых результатов: {n_num})",
+        f"Инженер-испытатель: {pi.engineer or '—'}",
         f"Фото в Приложении №1: {len(pi.photos)} (с изображением: {sum(1 for p in pi.photos if p.image)})",
     ]
     return lines
 
 
 def convert(pi_path: str, template_path: str, out_dir: Optional[str] = None,
-            log: Optional[Callable[[str], None]] = None) -> str:
+            log: Optional[Callable[[str], None]] = None, engineers: Optional[dict] = None) -> str:
     log = log or (lambda s: None)
+    if engineers is None:
+        engineers = load_engineers((os.path.dirname(os.path.abspath(template_path)),))
     pi = parse_pi(pi_path)
     for line in summary(pi):
         log(line)
@@ -1500,7 +1704,7 @@ def convert(pi_path: str, template_path: str, out_dir: Optional[str] = None,
         log("Внимание: " + wmsg)
     out_dir = out_dir or os.path.dirname(os.path.abspath(pi_path))
     out_path = os.path.join(out_dir, output_name(pi))
-    generate_pz(pi, template_path, out_path, log)
+    generate_pz(pi, template_path, out_path, log, engineers)
     log(f"Готово: {out_path}")
     return out_path
 

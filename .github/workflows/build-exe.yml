@@ -23,17 +23,20 @@ jobs:
         shell: cmd
         run: build.bat
 
-      - name: Smoke test EXE on sample PI
+      - name: Smoke test EXE on sample PIs
         shell: pwsh
         run: |
           New-Item -ItemType Directory -Force smoke | Out-Null
           python tests/make_sample_pi.py tests/fixtures/pi_2610101.json smoke/sample_pi.docx
-          $p = Start-Process -FilePath dist/PI_to_PZ.exe -ArgumentList '--batch', 'smoke/sample_pi.docx', '--out', 'smoke' -Wait -PassThru
-          Get-Content smoke/PI_to_PZ.log
-          if ($p.ExitCode -ne 0) { exit 1 }
-          $out = Get-ChildItem smoke -Filter '*2610101*.docx'
-          if (-not $out) { Write-Error 'PZ was not created'; exit 1 }
+          Copy-Item (Get-ChildItem tests/fixtures -Filter '*2609082*.docx').FullName smoke/real_pi.docx
+          foreach ($pi in 'smoke/sample_pi.docx', 'smoke/real_pi.docx') {
+            $p = Start-Process -FilePath dist/PI_to_PZ.exe -ArgumentList '--batch', $pi, '--out', 'smoke' -Wait -PassThru
+            Get-Content smoke/PI_to_PZ.log
+            if ($p.ExitCode -ne 0) { Write-Error "EXE failed on $pi"; exit 1 }
+          }
+          $out = Get-ChildItem smoke -Filter '*_*_*.docx' | Where-Object { $_.Name -match '2610101|2609082' -and $_.Name -notmatch 'pi' }
           $out | Format-Table Name, Length
+          if (@($out).Count -ne 2) { Write-Error 'PZ was not created for both PIs'; exit 1 }
 
       - uses: actions/upload-artifact@v4
         with:
