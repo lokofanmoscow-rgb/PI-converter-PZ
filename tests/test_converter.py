@@ -222,9 +222,12 @@ class SampleProtocolTest(unittest.TestCase):
             self.assertIn("02.10.2026", t)
         st = stamps(self.doc)
         self.assertIn("Владелец: Свистунов Максим Сергеевич", st[0])
-        self.assertIn("Сертификат: 022779a70091b3e59d4a3c5d9bb6704b48", st[0])
+        self.assertIn("Сертификат: 01f2c48affe8e54dad4d2f215001a1816f", st[0])
+        self.assertIn("Срок действия: с 28.10.2026 по 28.01.2028", st[0])
         self.assertEqual(st[0], st[1])  # Choice + Fallback
         self.assertIn("Владелец: Хасянов Дамир Рафикович", st[2])
+        self.assertIn("Сертификат: 0181a9476874e5d9b0493b73fc01a19bb8", st[2])
+        self.assertIn("Срок действия: с 02.11.2026 по 02.02.2028", st[2])
 
     def test_engineer_line_width_kept(self):
         line = next(t for t in self.texts if "Инженер-испытатель" in t and "_" in t)

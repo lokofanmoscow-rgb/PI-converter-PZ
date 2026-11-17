@@ -55,16 +55,23 @@ HEADER_NUMBER_SOURCE = "napravlenie"
 ENGINEERS = {
     "С.Д. Рождественский": {
         "owner": "Рождественский Сергей Дмитриевич",
-        "certificate": "024d7aa60091b3be9c4c48dd5cd302552e",
-        "valid": "с 10.11.2025 по 10.11.2026",
+        "certificate": "01de936e407f4a078e4516762601a18161",
+        "valid": "с 28.10.2026 по 28.01.2028",
     },
     "М.С. Свистунов": {
         "owner": "Свистунов Максим Сергеевич",
-        "certificate": "022779a70091b3e59d4a3c5d9bb6704b48",
-        "valid": "с 10.11.2025 по 10.11.2026",
+        "certificate": "01f2c48affe8e54dad4d2f215001a1816f",
+        "valid": "с 28.10.2026 по 28.01.2028",
     },
 }
 ENGINEERS_FILE = "инженеры.json"
+
+# Штамп ЭП второго подписанта (блок «Результаты проверил», Руководитель ИЛ).
+HEAD_OF_LAB_STAMP = {
+    "owner": "Хасянов Дамир Рафикович",
+    "certificate": "0181a9476874e5d9b0493b73fc01a19bb8",
+    "valid": "с 02.11.2026 по 02.02.2028",
+}
 
 # Диапазон случайной 3σ для элементов с результатом BL.
 SIGMA_MIN, SIGMA_MAX = 3, 29
@@ -1226,6 +1233,10 @@ def _update_signatures(body, pi: PIData, engineers: dict, log: Callable[[str], N
     if n_dates < 2:
         log(f"Внимание: обновлено дат подписей: {n_dates} (ожидалось 2).")
 
+    i_head = next((i for i, t in enumerate(texts) if i > i_chk and t.strip().startswith("Руководитель ИЛ")), i_chk + 8)
+    if not _fill_stamps(paras[i_chk:i_head + 1], HEAD_OF_LAB_STAMP):
+        log("Внимание: в шаблоне не найден штамп ЭП руководителя ИЛ.")
+
     if not pi.engineer:
         return
     # строка «Инженер-испытатель ___И.О. Фамилия ___дата__»: меняем фамилию, сохраняя ширину
@@ -1243,8 +1254,14 @@ def _update_signatures(body, pi: PIData, engineers: dict, log: Callable[[str], N
         log(f"ВНИМАНИЕ: нет данных сертификата ЭП для инженера «{pi.engineer}» — штамп ЭП в ПЗ НЕ изменён. "
             f"Добавьте инженера в файл {ENGINEERS_FILE} рядом с программой.")
         return
+    if not _fill_stamps(paras[i_eng:i_chk], info):
+        log("Внимание: в шаблоне не найден штамп ЭП инженера-испытателя.")
+
+
+def _fill_stamps(paras, info: dict) -> int:
+    """Записать сертификат, владельца и срок действия во все штампы ЭП в этих абзацах."""
     stamps = 0
-    for p in paras[i_eng:i_chk]:
+    for p in paras:
         for tx in p.iter(w("txbxContent")):
             stamps += 1
             for tp in tx.iter(w("p")):
@@ -1255,8 +1272,7 @@ def _update_signatures(body, pi: PIData, engineers: dict, log: Callable[[str], N
                     regex_replace_in_paragraph(tp, r"Владелец:.*", _escape_repl(f"Владелец: {info['owner']}"))
                 elif t.startswith("Срок действия:"):
                     regex_replace_in_paragraph(tp, r"Срок действия:.*", _escape_repl(f"Срок действия: {info['valid']}"))
-    if not stamps:
-        log("Внимание: в шаблоне не найден штамп ЭП инженера-испытателя.")
+    return stamps
 
 
 def _update_appendix_pages(body, pages: int) -> None:
